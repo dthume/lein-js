@@ -1,11 +1,10 @@
 (ns lein-js.closure
-  (:import [com.google.javascript.jscomp CompilerOptions JSSourceFile
-	    CompilationLevel WarningLevel ClosureCodingConvention
-	    DiagnosticGroups CheckLevel DefaultCodingConvention]
-	   [java.nio.charset Charset])
-  (:use [clojure.contrib.string :only [lower-case]]
-	[clojure.contrib.io :only [file]])
-  (:require [clojure.contrib.duck-streams :as duck-streams]))
+  (:import [com.google.javascript.jscomp
+            CompilerOptions JSSourceFile CompilationLevel WarningLevel
+            ClosureCodingConvention DiagnosticGroups CheckLevel]
+           [java.nio.charset Charset])
+  (:use [clojure.string :only [lower-case]]
+        [clojure.java.io :only [file]]))
 
 (def default-options
      {:compilation-level :simple-optimizations
@@ -17,11 +16,15 @@
       :compilation-ignored ["DEPRECATED" "VISIBILITY" "ACCESS_CONTROLS"
 			    "STRICT_MODULE_DEP_CHECK" "MISSING_PROPERTIES"
 			    "CHECK_TYPES"]
+      :inline-constant-vars false
+      :inline-local-variables false
+      :inline-variables false
       :pretty-print false
       :print-input-delimiter false
       :process-closure-primitives false
       :manage-closure-deps false
-      :charset "UTF-8"})
+      :charset "UTF-8"
+      :define {}})
 
 (def compilation-levels
      {:whitespace-only CompilationLevel/WHITESPACE_ONLY
@@ -34,7 +37,7 @@
       :verbose WarningLevel/VERBOSE})
 
 (def coding-conventions
-     {:default DefaultCodingConvention
+     {:default ClosureCodingConvention
       :closure ClosureCodingConvention})
 
 (def summary-details
@@ -68,13 +71,15 @@
   (doto compiler-options
     (.setCodingConvention (.newInstance ((:coding-convention user-options) coding-conventions)))
     (.setSummaryDetailLevel ((:summary-detail user-options) summary-details))
-    (.setManageClosureDependencies (boolean (:manage-closure-deps user-options))))
+    (.setManageClosureDependencies (boolean (:manage-closure-deps user-options)))
+    (.setInlineConstantVars (boolean (:inline-constant-vars user-options)))
+    (.setInlineLocalVariables (boolean (:inline-local-variables user-options)))
+    (.setInlineVariables (boolean (:inline-variables user-options))))
   
   ;; CompilerOptions has no setters defined for these fields
   (set! (. compiler-options prettyPrint) (:pretty-print user-options))
   (set! (. compiler-options printInputDelimiter) (:print-input-delimiter user-options))
-  (set! (. compiler-options closurePass) (:process-closure-primitives user-options))
-  (set! (. compiler-options jsOutputFile) output))
+  (set! (. compiler-options closurePass) (:process-closure-primitives user-options)))
 
 ;; See DiagnosticGroups.setWarningLevels
 (defn set-diagnostics
@@ -84,20 +89,31 @@
       (set-diagnostic (:compilation-warnings user-options) CheckLevel/WARNING)
       (set-diagnostic (:compilation-ignored user-options) CheckLevel/OFF)))
 
+(defn set-defines
+  [opts u-options]
+  (doseq [[kw v] (:define u-options)]
+    (let [k (name kw)]
+      (cond
+       (instance? java.lang.Boolean v) (.setDefineToBooleanLiteral opts k v)
+       (integer? v) (.setDefineToNumberLiteral opts k v)
+       (number? v) (.setDefineToDoubleLiteral opts k v)
+       :else (.setDefineToStringLiteral opts k (str v))))))
+
 (defn make-compiler-options
   [options output]
   (let [user-options (merge default-options options)
 	compiler-options (CompilerOptions.)]
     (doto compiler-options
-	(set-compilation-level ((:compilation-level user-options) compilation-levels))
-	(set-warning-level ((:warning-level user-options) warning-levels))
-	(set-compiler-option-fields user-options output)
-	(set-diagnostics user-options))))
+      (set-compilation-level ((:compilation-level user-options) compilation-levels))
+      (set-warning-level ((:warning-level user-options) warning-levels))
+      (set-compiler-option-fields user-options output)
+      (set-diagnostics user-options)
+      (set-defines user-options))))
 
 (defn write-output
   [compiler output]
   (println "Writing result to" (.getAbsolutePath output))
-  (duck-streams/spit output (.toSource compiler)))
+  (spit output (.toSource compiler)))
 
 (defn run
   [inputs output options]
@@ -108,8 +124,8 @@
 	externs (map #(JSSourceFile/fromFile % charset) (:externs options))
 	compiler (com.google.javascript.jscomp.Compiler. System/err)]
     (com.google.javascript.jscomp.Compiler/setLoggingLevel java.util.logging.Level/WARNING)
-    (doto compiler
-      (.compile (into-array JSSourceFile externs)
-		(into-array JSSourceFile inputs)
-		compiler-options))
+    (.compile compiler
+              (into-array JSSourceFile externs)
+              (into-array JSSourceFile inputs)
+              compiler-options)
     (write-output compiler (file output))))
